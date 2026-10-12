@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
-
+	"errors"
 	"github.com/poiuyttq/tripgo/internal/config"
 	"github.com/poiuyttq/tripgo/internal/httpserver"
 	"github.com/poiuyttq/tripgo/internal/storage"
@@ -22,7 +22,7 @@ func main() {
 	}
 	log.Printf("config loaded: %+v", cfg)
 
-	dbPool, err := storage.New(context.Background(), cfg)
+	dbPool, err := storage.New(ctx, cfg)
 	if err != nil {
 		log.Fatalf("database init failed: %v", err)
 	}
@@ -39,13 +39,21 @@ func main() {
 
 	log.Printf("starting http server on %s", cfg.HTTPAddr)
 
+	serverFailed := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("http server failed: %v", err)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverFailed <- err
 		}
 	}()
 
-	<-ctx.Done()
+	select{
+		case <-ctx.Done():
+			// graceful shutdown
+		case err :=<-serverFailed:
+			log.Fatalf("http server failed: %v", err)
+			// server failed
+	}
+	
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()

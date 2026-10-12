@@ -13,7 +13,7 @@ import (
 
 var (
 	ErrDriverHasActiveTrip  = repository.ErrDriverHasActiveTrip
-	ErrTripNotFound         = errors.New("trip not found")
+	ErrTripNotFound         = repository.ErrTripNotFound
 	ErrTripAlreadyCompleted = errors.New("trip already completed")
 )
 
@@ -77,9 +77,12 @@ func (s *TripService) GetTrip(ctx context.Context, tripID string) (model.Trip, e
 
 func (s *TripService) FinishTrip(ctx context.Context, tripID string) error {
 	return s.txManager.Do(ctx, func(ctx context.Context) error {
-		trip, err := s.tripRepo.GetByID(ctx, tripID)
+		trip, err := s.tripRepo.GetByIDForUpdate(ctx, tripID)
 		if err != nil {
-			return ErrTripNotFound
+			if errors.Is(err, ErrTripNotFound) {
+				return ErrTripNotFound
+			}
+			return fmt.Errorf("get trip: %w", err)
 		}
 		if trip.Status == "completed" {
 			return ErrTripAlreadyCompleted

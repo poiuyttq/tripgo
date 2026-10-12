@@ -35,14 +35,27 @@ func ReadyHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+type createTripRequest struct {
+	UserId     api.TripId              `json:"user_id"`
+	DriverId   api.TripId              `json:"driver_id"`
+	StartPoint *tripCoordinatesRequest `json:"start_point"`
+	EndPoint   *tripCoordinatesRequest `json:"end_point"`
+	Price      *int64                  `json:"price"`
+}
+
+type tripCoordinatesRequest struct {
+	Latitude  *float64 `json:"latitude"`
+	Longitude *float64 `json:"longitude"`
+}
+
 func CreateTripHandler(tripService *service.TripService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req api.TripData
+		var req createTripRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid_request", "Invalid request", "Request body is invalid", r.URL.Path)
 			return
 		}
-		if err := validateTripData(req); err != nil {
+		if err := validateCreateTripRequest(req); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid_request", "Invalid request", err.Error(), r.URL.Path)
 			return
 		}
@@ -51,11 +64,11 @@ func CreateTripHandler(tripService *service.TripService) http.HandlerFunc {
 			ID:        uuid.NewString(),
 			UserID:    req.UserId.String(),
 			DriverID:  req.DriverId.String(),
-			StartLat:  req.StartPoint.Latitude,
-			StartLng:  req.StartPoint.Longitude,
-			EndLat:    req.EndPoint.Latitude,
-			EndLng:    req.EndPoint.Longitude,
-			Price:     req.Price,
+			StartLat:  *req.StartPoint.Latitude,
+			StartLng:  *req.StartPoint.Longitude,
+			EndLat:    *req.EndPoint.Latitude,
+			EndLng:    *req.EndPoint.Longitude,
+			Price:     *req.Price,
 			Status:    "active",
 			StartedAt: time.Now().UTC(),
 			CreatedAt: time.Now().UTC(),
@@ -115,23 +128,38 @@ func FinishTripHandler(tripService *service.TripService) http.HandlerFunc {
 	}
 }
 
-func validateTripData(req api.TripData) error {
+func validateCreateTripRequest(req createTripRequest) error {
 	if req.UserId == uuid.Nil || req.DriverId == uuid.Nil {
 		return fmt.Errorf("user_id and driver_id are required")
 	}
-	if req.StartPoint.Latitude < -90 || req.StartPoint.Latitude > 90 {
+	if req.StartPoint == nil {
+		return fmt.Errorf("start_point is required")
+	}
+	if req.StartPoint.Latitude == nil || req.StartPoint.Longitude == nil {
+		return fmt.Errorf("start_point latitude and longitude are required")
+	}
+	if req.EndPoint == nil {
+		return fmt.Errorf("end_point is required")
+	}
+	if req.EndPoint.Latitude == nil || req.EndPoint.Longitude == nil {
+		return fmt.Errorf("end_point latitude and longitude are required")
+	}
+	if req.Price == nil {
+		return fmt.Errorf("price is required")
+	}
+	if *req.StartPoint.Latitude < -90 || *req.StartPoint.Latitude > 90 {
 		return fmt.Errorf("start_point.latitude must be between -90 and 90")
 	}
-	if req.StartPoint.Longitude < -180 || req.StartPoint.Longitude > 180 {
+	if *req.StartPoint.Longitude < -180 || *req.StartPoint.Longitude > 180 {
 		return fmt.Errorf("start_point.longitude must be between -180 and 180")
 	}
-	if req.EndPoint.Latitude < -90 || req.EndPoint.Latitude > 90 {
+	if *req.EndPoint.Latitude < -90 || *req.EndPoint.Latitude > 90 {
 		return fmt.Errorf("end_point.latitude must be between -90 and 90")
 	}
-	if req.EndPoint.Longitude < -180 || req.EndPoint.Longitude > 180 {
+	if *req.EndPoint.Longitude < -180 || *req.EndPoint.Longitude > 180 {
 		return fmt.Errorf("end_point.longitude must be between -180 and 180")
 	}
-	if req.Price < 0 {
+	if *req.Price < 0 {
 		return fmt.Errorf("price must be greater than or equal to 0")
 	}
 	return nil

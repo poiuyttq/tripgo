@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Masterminds/squirrel"
@@ -15,7 +14,10 @@ import (
 	"github.com/poiuyttq/tripgo/internal/txmanager"
 )
 
-var ErrDriverHasActiveTrip = errors.New("driver already has active trip")
+var (
+	ErrDriverHasActiveTrip = errors.New("driver already has active trip")
+	ErrTripNotFound        = errors.New("trip not found")
+)
 
 type TripRepository struct {
 	pool *pgxpool.Pool
@@ -91,14 +93,27 @@ func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "23505") || strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint")
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+
+	return false
 }
 
 func (r *TripRepository) GetByID(ctx context.Context, id string) (model.Trip, error) {
+	return r.getByID(ctx, id, false)
+}
+
+func (r *TripRepository) GetByIDForUpdate(ctx context.Context, id string) (model.Trip, error) {
+	return r.getByID(ctx, id, true)
+}
+
+func (r *TripRepository) getByID(ctx context.Context, id string, forUpdate bool) (model.Trip, error) {
 	var trip model.Trip
 	queryBuilder := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
-	query, args, err := queryBuilder.
+	selectBuilder := queryBuilder.
 		Select(
 			"id",
 			"user_id",
@@ -115,8 +130,11 @@ func (r *TripRepository) GetByID(ctx context.Context, id string) (model.Trip, er
 			"updated_at",
 		).
 		From("trips").
-		Where(squirrel.Eq{"id": id}).
-		ToSql()
+		Where(squirrel.Eq{"id": id})
+	if forUpdate {
+		selectBuilder = selectBuilder.Suffix("FOR UPDATE")
+	}
+	query, args, err := selectBuilder.ToSql()
 	if err != nil {
 		return model.Trip{}, fmt.Errorf("build get trip query: %w", err)
 	}
@@ -137,7 +155,7 @@ func (r *TripRepository) GetByID(ctx context.Context, id string) (model.Trip, er
 		&trip.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Trip{}, fmt.Errorf("trip not found: %w", err)
+		return model.Trip{}, fmt.Errorf("%w: %w", ErrTripNotFound, err)
 	}
 	if err != nil {
 		return model.Trip{}, fmt.Errorf("get trip: %w", err)

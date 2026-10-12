@@ -1,9 +1,11 @@
 #start
+-include .env
+export
 run:
-	set -a; . ./.env; set +a; go run ./cmd/trip-service
+	go run ./cmd/trip-service
 #generating code from openapi spec	
 generate:
-	go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+
 
 	go tool oapi-codegen \
 	-generate types,chi-server \
@@ -12,7 +14,8 @@ generate:
 	contracts/openapi/trip-service.openapi.yaml
 #migration commands
 migrate:
-	go tool goose -dir migrations up
+	go tool goose -dir migrations postgres "$(DATABASE_URL)" up
+	
 
 migrate_down:
-	go tool goose -dir migrations down
+	go tool goose -dir migrations postgres "$(DATABASE_URL)" down
