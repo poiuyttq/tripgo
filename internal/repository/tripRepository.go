@@ -10,13 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/poiuyttq/tripgo/internal/model"
-	"github.com/poiuyttq/tripgo/internal/txmanager"
-)
 
-var (
-	ErrDriverHasActiveTrip = errors.New("driver already has active trip")
-	ErrTripNotFound        = errors.New("trip not found")
+	domaintrip "github.com/poiuyttq/tripgo/internal/domain/trip"
+	"github.com/poiuyttq/tripgo/internal/infra/postgres/transaction"
+	"github.com/poiuyttq/tripgo/internal/model"
 )
 
 type TripRepository struct {
@@ -28,14 +25,14 @@ func NewTripRepository(pool *pgxpool.Pool) *TripRepository {
 }
 
 func (r *TripRepository) exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
-	if tx := txmanager.TxFromContext(ctx); tx != nil {
+	if tx := transaction.TxFromContext(ctx); tx != nil {
 		return tx.Exec(ctx, query, args...)
 	}
 	return r.pool.Exec(ctx, query, args...)
 }
 
 func (r *TripRepository) queryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	if tx := txmanager.TxFromContext(ctx); tx != nil {
+	if tx := transaction.TxFromContext(ctx); tx != nil {
 		return tx.QueryRow(ctx, query, args...)
 	}
 	return r.pool.QueryRow(ctx, query, args...)
@@ -82,7 +79,7 @@ func (r *TripRepository) Create(ctx context.Context, trip model.Trip) error {
 
 	if _, err := r.exec(ctx, query, args...); err != nil {
 		if isUniqueViolation(err) {
-			return ErrDriverHasActiveTrip
+			return domaintrip.ErrDriverBusy
 		}
 		return fmt.Errorf("insert trip: %w", err)
 	}
@@ -155,7 +152,7 @@ func (r *TripRepository) getByID(ctx context.Context, id string, forUpdate bool)
 		&trip.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Trip{}, fmt.Errorf("%w: %w", ErrTripNotFound, err)
+		return model.Trip{}, fmt.Errorf("%w: %w", domaintrip.ErrTripNotFound, err)
 	}
 	if err != nil {
 		return model.Trip{}, fmt.Errorf("get trip: %w", err)
@@ -235,7 +232,7 @@ func (r *TripRepository) Finish(ctx context.Context, tripID string, finishedAt t
 		return fmt.Errorf("finish trip: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("trip not found")
+		return domaintrip.ErrTripNotFound
 	}
 	return nil
 }
@@ -257,7 +254,7 @@ func (r *TripRepository) FinishTx(ctx context.Context, tx pgx.Tx, tripID string,
 		return fmt.Errorf("finish trip in tx: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("trip not found")
+		return domaintrip.ErrTripNotFound
 	}
 	return nil
 }

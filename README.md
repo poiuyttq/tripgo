@@ -37,7 +37,12 @@ make migrate      # apply goose migrations
 make migrate_down # rollback migrations
 make run          # start service locally
 make generate     # generate OpenAPI code
+make lint         # run golangci-lint via go tool
+make test         # unit tests with race detector and coverage summary
+make test-integration # PostgreSQL repository integration tests
 ```
+
+`make test-integration` uses the PostgreSQL URL from `.env` and applies migrations first. Start the work environment with `tripgoctl environment start` before running it.
 
 Также можно проверить сборку напрямую:
 
@@ -87,21 +92,36 @@ DATABASE_QUERY_TIMEOUT=3s
 
 ## Архитектура
 
-Сервис построен по простому layered подходу:
+Зависимости направлены внутрь: HTTP-адаптеры и PostgreSQL-репозиторий зависят от usecase/model/domain, usecase — от model/domain и собственных интерфейсов, домен зависит только от стандартной библиотеки Go.
 
-- `cmd/trip-service` — точка входа, загрузка конфигурации и запуск HTTP-сервера
-- `internal/config` — чтение env и валидация обязательных параметров
-- `internal/storage` — инициализация `pgxpool`
-- `internal/txmanager` — менеджер транзакций, работающий через контекст
-- `internal/repository` — SQL-репозитории для `trips` и `trip_status_history`
-- `internal/service` — бизнес-логика: создание, получение и завершение поездки
-- `internal/httpserver` — HTTP-роуты и обработчики
+- `cmd/trip-service` — загрузка конфигурации, запуск HTTP-сервера и обработка сигналов
+- `internal/container` — единственное место создания пула, репозиториев, менеджера транзакций, usecase и HTTP-обработчиков
+- `internal/config` — чтение env и проверка обязательных параметров
+- `internal/domain/trip` — статусы, переход состояния поездки и доменные ошибки
+- `internal/model` — структуры данных, передаваемые между слоями и адаптерами
+- `internal/usecase/trip/{create,get,finish}` — сценарии приложения; интерфейсы зависимостей объявлены в `contract.go` соответствующего usecase
+- `internal/repository` — PostgreSQL-реализации доступа к поездкам и истории статусов
+- `internal/infra/postgres` — пул PostgreSQL и контекстный менеджер транзакций
+- `internal/http/trip/{create,get,finish}` — HTTP-адаптеры по одному пакету на операцию; их интерфейсы находятся рядом в `contract.go`
+- `internal/http/domainerror` и `internal/http/response` — преобразование доменных ошибок и запись HTTP-ответов
+- `internal/httpserver` — только регистрация маршрутов
+- `internal/generated` — типы и серверный контракт, сгенерированные из OpenAPI
+
+`main` не создаёт репозитории и не знает конкретных реализаций usecase: он получает собранное приложение через `container.New` и управляет жизненным циклом сервера. Интерфейсы объявлены у потребителей: usecase формулирует нужные ему репозитории и транзакционный менеджер, HTTP-адаптеры — необходимые операции usecase.
+
+Отклонение от примера раскладки: репозитории поездки и истории статусов находятся в общем пакете `internal/repository`, поскольку оба обслуживают один агрегат и используют один контекст транзакции. Usecase при этом зависит от отдельных узких интерфейсов для каждого сценария.
+
+## Observability
+
+Сервис экспортирует HTTP- и PostgreSQL-трейсы и метрики через OTLP/HTTP в Collector. Входящий запрос получает span вида `POST /api/v1/trips`; SQL-инструментирование подключено к pgx pool и не записывает SQL или параметры запросов. Логи — JSON `slog` в stdout; middleware добавляет `service`, `trace_id` и `span_id`, а также method, route template, статус и длительность.
+
+Настройки OTel берутся из стандартных `OTEL_*` переменных в `.env`, созданном `tripgoctl`. После запуска отправь запрос на создание поездки и найди его в Jaeger; метрики `http.server.request.duration`, `db.client.operation.duration` и `tripgo.trips.created` доступны в Grafana через Prometheus datasource. Для локальной проверки exporter настраивается `OTEL_EXPORTER_OTLP_ENDPOINT` и `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`.
 
 ## Решения
 
 ### 1. Менеджер транзакций
 
-Для создания поездки используется один `Do(ctx, fn)` вызов. Транзакция начинает открываться в `txmanager` и передаётся через контекст в репозитории. Если `fn` возвращает ошибку или происходит паника, выполняется `ROLLBACK`. Если всё прошло успешно — `COMMIT`.
+Для создания поездки используется один `Do(ctx, fn)` вызов. Транзакция открывается в `internal/infra/postgres/transaction` и передаётся через контекст в репозитории. Если `fn` возвращает ошибку или происходит паника, выполняется `ROLLBACK`. Если всё прошло успешно — `COMMIT`.
 
 Выбран уровень изоляции: `ReadCommitted`.
 
@@ -120,7 +140,7 @@ DATABASE_QUERY_TIMEOUT=3s
 CREATE UNIQUE INDEX trips_one_active_per_driver_idx ON trips (driver_id) WHERE status = 'active';
 ```
 
-2. На уровне кода — перед созданием поездки сервис проверяет, есть ли активная поездка у водителя, а на уровне репозитория ловится ошибка `23505` и маппится в `ErrDriverHasActiveTrip`.
+2. На уровне приложения — usecase проверяет, есть ли активная поездка у водителя; нарушение уникального индекса при гонке переводится репозиторием в доменную ошибку `trip.ErrDriverBusy`.
 
 Так обеспечивается корректное поведение при конкурентных запросах: только одна поездка может быть активной на одного водителя.
 
