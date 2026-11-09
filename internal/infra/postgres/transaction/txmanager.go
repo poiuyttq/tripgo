@@ -1,4 +1,4 @@
-package txmanager
+package transaction
 
 import (
 	"context"
@@ -6,10 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-const (
-	defaultIsolation = pgx.ReadCommitted
 )
 
 type TxManager interface {
@@ -25,26 +21,26 @@ func New(pool *pgxpool.Pool) TxManager {
 }
 
 func (m *txManager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
-	if txFromContext := TxFromContext(ctx); txFromContext != nil {
+	if TxFromContext(ctx) != nil {
 		return fn(ctx)
 	}
 
-	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: defaultIsolation})
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 
 	ctxWithTx := WithTx(ctx, tx)
 	defer func() {
-		if r := recover(); r != nil {
+		if panicValue := recover(); panicValue != nil {
 			_ = tx.Rollback(ctx)
-			panic(r)
+			panic(panicValue)
 		}
 	}()
 
 	if err := fn(ctxWithTx); err != nil {
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			return fmt.Errorf("rollback transaction: %v: %w", rbErr, err)
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+			return fmt.Errorf("rollback transaction: %v: %w", rollbackErr, err)
 		}
 		return err
 	}
@@ -52,7 +48,6 @@ func (m *txManager) Do(ctx context.Context, fn func(ctx context.Context) error) 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
-
 	return nil
 }
 

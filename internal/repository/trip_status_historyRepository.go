@@ -6,8 +6,8 @@ import (
 
 	"github.com/Masterminds/squirrel"
 
+	"github.com/poiuyttq/tripgo/internal/infra/postgres/transaction"
 	"github.com/poiuyttq/tripgo/internal/model"
-	"github.com/poiuyttq/tripgo/internal/txmanager"
 )
 
 type TripStatusHistoryRepository struct{}
@@ -39,7 +39,7 @@ func (r *TripStatusHistoryRepository) Add(ctx context.Context, history model.Tri
 		return fmt.Errorf("build history insert query: %w", err)
 	}
 
-	if tx := txmanager.TxFromContext(ctx); tx != nil {
+	if tx := transaction.TxFromContext(ctx); tx != nil {
 		if _, err := tx.Exec(ctx, query, args...); err != nil {
 			return fmt.Errorf("insert trip status history: %w", err)
 		}
